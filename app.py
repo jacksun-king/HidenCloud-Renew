@@ -321,7 +321,24 @@ def renew_service(page):
 
         if not modal_opened:
             log("❌ 错误：尝试多次后，续费弹窗仍未出现。")
-            page.screenshot(path="renew_modal_failed.png")
+            try:
+                body = page.locator("body").inner_text()
+                log(f"📄 当前页面文本(前1000): {body[:1000].replace(chr(10), ' | ')}")
+            except Exception as e:
+                log(f"读取页面文本失败: {e}")
+            try:
+                for i in range(5):
+                    el = page.locator(f'[id="renewService-{server_id}"]')
+                    if el.count() > 0:
+                        log(f"modal DOM 存在 (#{i})")
+                        inner = el.first.inner_text()[:500].replace(chr(10), ' | ')
+                        log(f"modal 内容: {inner}")
+                        break
+                else:
+                    log("modal DOM 不存在")
+            except Exception as e:
+                log(f"modal 检查异常: {e}")
+            page.screenshot(path="renew_modal_failed.png", full_page=True)
             return False
 
         handle_cloudflare(page)
