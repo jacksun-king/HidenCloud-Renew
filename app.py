@@ -10,6 +10,9 @@ EMAIL        = os.environ.get('EMAIL') or ""           # 登录邮箱,可选，�
 PASSWORD     = os.environ.get('PASSWORD') or ""        # 登录密码,可选，作为备用
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN') or ""    # Telegram Bot Token,可选
 TG_CHAT_ID   = os.environ.get('TG_CHAT_ID') or ""      # Telegram Chat ID,可选
+GH_TOKEN     = os.environ.get('GH_TOKEN') or ""        # GitHub PAT,用于自动回写 COOKIE_VALUE,可选
+
+REMEMBER_COOKIE_NAME = "remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d"
 
 BASE_URL = "https://dash.hidencloud.com"
 LOGIN_URL = f"{BASE_URL}/auth/login"
@@ -85,30 +88,91 @@ def send_telegram_notification(status, old_due, new_due):
         log(f"❌ Telegram 通知异常: {e}")
         return False
 
-def handle_cloudflare(page):
-    iframe_selector = 'iframe[src*="challenges.cloudflare.com"]'
-    if page.locator(iframe_selector).count() == 0:
-        return True
-    log("⚠️ 检测到 Cloudflare 验证...")
-    start_time = time.time()
-    while time.time() - start_time < 60:
-        if page.locator(iframe_selector).count() == 0:
-            log("✅ Cloudflare 验证通过！")
+# --- 自动回写 cookie 到 GitHub Secret（解决"每次手动更新 cookie"）---
+def update_github_secret(secret_name, new_value):
+    if not GH_TOKEN:
+        log("⚠️ 未配置 GH_TOKEN，无法自动更新 Secret")
+        return False
+    if not new_value or new_value == COOKIE_VALUE:
+        return False
+    masked = new_value[:4] + "..." + new_value[-4:] if len(new_value) > 8 else "***"
+    log(f"🔄 自动更新 Secret {secret_name} (新值: {masked})")
+    try:
+        env = os.environ.copy()
+        env["GH_TOKEN"] = GH_TOKEN
+        proc = subprocess.run(
+            ["gh", "secret", "set", secret_name, "--body", new_value],
+            capture_output=True, text=True, timeout=60, check=False, env=env
+        )
+        if proc.returncode == 0:
+            log("✅ Secret 更新成功")
             return True
+        log(f"❌ Secret 更新失败: {proc.stderr.strip()[:200]}")
+        return False
+    except Exception as e:
+        log(f"❌ Secret 更新异常: {e}")
+        return False
+
+def auto_update_cookie(context):
+    """登录成功后，从浏览器提取最新 remember_web cookie 并回写 GitHub Secret"""
+    try:
+        cookies = context.cookies()
+        new_value = None
+        for c in cookies:
+            if c.get("name") and c["name"].startswith("remember_web_"):
+                new_value = c["value"]
+                break
+        if not new_value:
+            log("ℹ️ 未找到 remember_web cookie，跳过自动回写")
+            return
+        if new_value == COOKIE_VALUE:
+            log("✅ 当前 COOKIE_VALUE 已是最新，无需回写")
+            return
+        log("🔑 检测到新 cookie，尝试自动回写...")
+        update_github_secret("COOKIE_VALUE", new_value)
+    except Exception as e:
+        log(f"⚠️ 自动回写 cookie 异常: {e}")
+
+def handle_cloudflare(page, max_wait=90):
+    """等待 Cloudflare 挑战通过（iframe 复选框 + 非 iframe JS 挑战 / Just a moment）"""
+    start_time = time.time()
+    while time.time() - start_time < max_wait:
+        url = page.url
+        title = ""
         try:
-            frame = page.frame_locator(iframe_selector)
-            checkbox = frame.locator('input[type="checkbox"]')
-            if checkbox.is_visible():
-                log("🖱️ 点击验证复选框...")
-                time.sleep(random.uniform(0.5, 1.5))
-                checkbox.click()
-                log("⏳ 已点击，等待验证结果...")
-                time.sleep(5)
-            else:
-                time.sleep(1)
+            title = page.title().lower()
         except Exception:
             pass
-    log("❌ 验证超时。")
+        body_text = ""
+        try:
+            body_text = page.locator("body").inner_text().lower()
+        except Exception:
+            pass
+
+        cf_active = ('__cf_chl' in url
+                     or "just a moment" in title
+                     or "security verification" in body_text
+                     or page.locator('iframe[src*="challenges.cloudflare.com"]').count() > 0
+                     or "we're verifying" in body_text)
+        if not cf_active:
+            return True
+
+        log("⚠️ 检测到 Cloudflare 验证...")
+        if page.locator('iframe[src*="challenges.cloudflare.com"]').count() > 0:
+            try:
+                frame = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
+                checkbox = frame.locator('input[type="checkbox"]')
+                if checkbox.is_visible():
+                    log("🖱️ 点击验证复选框...")
+                    time.sleep(random.uniform(0.5, 1.5))
+                    checkbox.click()
+                    log("⏳ 已点击，等待验证结果...")
+                    time.sleep(5)
+            except Exception:
+                pass
+        # JS 挑战（Just a moment）：只需等待，浏览器会自动执行 JS
+        time.sleep(2)
+    log(f"❌ Cloudflare 验证超时（{max_wait}s）。当前 title: {page.title()[:60]}")
     return False
 
 def login(page):
@@ -117,7 +181,7 @@ def login(page):
         log("📇 尝试 Cookie 登录...")
         try:
             page.context.add_cookies([{
-                'name': 'remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d',
+                'name': REMEMBER_COOKIE_NAME,
                 'value': COOKIE_VALUE,
                 'domain': 'dash.hidencloud.com',
                 'path': '/',
@@ -127,15 +191,15 @@ def login(page):
                 'sameSite': 'Lax'
             }])
             page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
-            handle_cloudflare(page)
+            cf_ok = handle_cloudflare(page)
             page_title = page.title()
-            log(f"📝 当前Title: {page_title}")
+            log(f"📝 当前Title: {page_title} | URL: {page.url[:100]}")
             if "auth/login" not in page.url:
                 log(f"✅ Cookie 登录成功！当前已到达dashboard页面")
                 return True
-            log("❌ Cookie 失效，请更换")
-        except:
-            pass
+            log(f"❌ Cookie 失效，请更换（CF 通过={cf_ok}）")
+        except Exception as e:
+            log(f"❌ Cookie 登录异常: {e}")
 
     # 2. 账号密码登录
     if not EMAIL or not PASSWORD:
@@ -337,7 +401,12 @@ def main():
             page.add_init_script(STEALTH_JS)
 
             if not login(page):
+                log("❌ 登录失败，尝试把浏览器里的最新 cookie 回写（如能拿到）")
+                auto_update_cookie(context)
                 sys.exit(1)
+
+            # 登录成功后自动回写最新 cookie，避免每次手动更新
+            auto_update_cookie(context)
 
             # 登录成功后，自动获取 Server ID
             server_id = get_server_id(page)
