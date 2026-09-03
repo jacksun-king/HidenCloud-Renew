@@ -420,10 +420,40 @@ def renew_service(page):
         handle_cloudflare(page)
 
         log("🔎 查找 'Pay' 按钮...")
-        pay_btn = page.locator('a:has-text("Pay"):visible, button:has-text("Pay"):visible').first
-        pay_btn.wait_for(state="visible", timeout=30000)
-        pay_btn.click()
-        log("✅ 'Pay' 按钮已点击。")
+        try:
+            pay_btn = page.locator('a:has-text("Pay"):visible, button:has-text("Pay"):visible').first
+            pay_btn.wait_for(state="visible", timeout=30000)
+            pay_btn.click()
+            log("✅ 'Pay' 按钮已点击。")
+        except Exception as pay_err:
+            log(f"⚠️ UI Pay 点击失败: {str(pay_err)[:120]}")
+            try:
+                body = page.locator("body").inner_text()
+                log(f"📄 invoice 页面文本(前800): {body[:800].replace(chr(10), ' | ')}")
+            except Exception as e2:
+                log(f"读取页面文本失败: {e2}")
+            try:
+                matched = page.evaluate("""() => {
+                    const els = [...document.querySelectorAll('a,button,input[type=submit],input[type=button]')];
+                    return els.filter(el => /pay/i.test((el.textContent||'') + '|' + (el.value||'')))
+                             .map(el => el.tagName + '|' + (el.textContent||'').trim().slice(0,40) + '|' + (el.value||'').slice(0,20))
+                             .slice(0,12);
+                }""")
+                log(f"📋 页面含 Pay 元素: {matched}")
+            except Exception as e3:
+                log(f"JS 查找 Pay 失败: {e3}")
+            try:
+                clicked = page.evaluate("""() => {
+                    const els = [...document.querySelectorAll('a,button,input[type=submit]')];
+                    const hit = els.find(el => /pay now|^pay\\b|pay invoice|^pay $/i.test((el.textContent||'').trim()) || /^pay/i.test((el.value||'').trim()));
+                    if (!hit) return 'no-pay-element';
+                    hit.click();
+                    return 'clicked:' + (hit.textContent||'').trim().slice(0,30);
+                }""")
+                log(f"🖱️ JS 点击 Pay: {clicked}")
+            except Exception as e4:
+                log(f"❌ JS 点击 Pay 失败: {e4}")
+                page.screenshot(path="pay_click_fail.png")
 
         # 等待支付确认页面或跳转回服务页
         time.sleep(5)
