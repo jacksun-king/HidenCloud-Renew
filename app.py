@@ -321,9 +321,10 @@ def renew_service(page):
                             if (!m) return 'no-modal';
                             m.classList.remove('hidden');
                             m.removeAttribute('aria-hidden');
-                            m.style.display = 'block';
+                            m.style.display = 'flex';
                             m.style.opacity = '1';
                             m.style.pointerEvents = 'auto';
+                            m.style.visibility = 'visible';
                             return 'opened';
                         }""")
                         time.sleep(1)
@@ -378,7 +379,24 @@ def renew_service(page):
 
         handle_cloudflare(page)
         log("🖱️ 点击 'Create Invoice'...")
-        create_btn.click()
+        try:
+            create_btn.click(timeout=15000)
+        except Exception as e:
+            log(f"⚠️ UI 点击 Create Invoice 失败，改用 JS 提交表单: {str(e)[:100]}")
+            try:
+                sub = page.evaluate("""() => {
+                    const m = document.querySelector('[id^="renewService-"]');
+                    if (!m) return 'no-modal';
+                    const f = m.querySelector('form');
+                    if (!f) return 'no-form';
+                    if (typeof f.requestSubmit === 'function') { f.requestSubmit(); return 'submitted'; }
+                    f.submit(); return 'submitted-fallback';
+                }""")
+                log(f"JS 提交表单结果: {sub}")
+            except Exception as e2:
+                log(f"❌ JS 提交也失败: {e2}")
+                page.screenshot(path="create_invoice_js_fail.png")
+                return False
 
         new_invoice_url = None
         start_wait = time.time()
