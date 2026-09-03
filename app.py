@@ -321,23 +321,40 @@ def renew_service(page):
 
         if not modal_opened:
             log("❌ 错误：尝试多次后，续费弹窗仍未出现。")
+            # dump modal DOM 结构
             try:
-                body = page.locator("body").inner_text()
-                log(f"📄 当前页面文本(前1000): {body[:1000].replace(chr(10), ' | ')}")
+                modals = page.locator('[id^="renewService-"]').all()
+                log(f"modal 元素数量: {len(modals)}")
+                for i, m in enumerate(modals):
+                    html = m.evaluate("el => el.outerHTML")
+                    log(f"modal[{i}] outerHTML(前1500): {html[:1500]}")
             except Exception as e:
-                log(f"读取页面文本失败: {e}")
+                log(f"modal dump 异常: {e}")
+            # flowbite JS 是否加载
             try:
-                for i in range(5):
-                    el = page.locator(f'[id="renewService-{server_id}"]')
-                    if el.count() > 0:
-                        log(f"modal DOM 存在 (#{i})")
-                        inner = el.first.inner_text()[:500].replace(chr(10), ' | ')
-                        log(f"modal 内容: {inner}")
-                        break
-                else:
-                    log("modal DOM 不存在")
+                has_flowbite = page.evaluate("typeof flowbite !== 'undefined'")
+                has_modal_init = page.evaluate("typeof initModals !== 'undefined'")
+                log(f"flowbite 全局: {has_flowbite} | initModals: {has_modal_init}")
             except Exception as e:
-                log(f"modal 检查异常: {e}")
+                log(f"flowbite 检查异常: {e}")
+            # 尝试 JS 强制打开 modal
+            try:
+                opened = page.evaluate("() => { const m = document.querySelector('[id^=\"renewService-\"]'); if (!m) return 'no-modal'; m.classList.remove('hidden'); m.removeAttribute('hidden'); m.style.display='block'; m.setAttribute('aria-hidden','false'); return 'opened'; }")
+                log(f"JS 强制打开 modal: {opened}")
+                time.sleep(2)
+                try:
+                    body = page.locator("body").inner_text()
+                    log(f"打开后页面文本(前700): {body[:700].replace(chr(10), ' | ')}")
+                    cb = page.locator('button:has-text("Create Invoice")')
+                    log(f"Create Invoice 按钮数量: {cb.count()}")
+                    if cb.count() > 0:
+                        cb_html = cb.first.evaluate("el => el.outerHTML")
+                        log(f"Create Invoice outerHTML: {cb_html[:400]}")
+                except Exception as e:
+                    log(f"强制打开后检查异常: {e}")
+                page.screenshot(path="renew_modal_forced.png", full_page=True)
+            except Exception as e:
+                log(f"JS 强制 modal 异常: {e}")
             page.screenshot(path="renew_modal_failed.png", full_page=True)
             return False
 
