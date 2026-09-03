@@ -314,8 +314,26 @@ def renew_service(page):
                     log("✅ 弹窗已成功弹出！")
                     break
                 except:
-                    log("⚠️ 弹窗未出现，可能是点击未响应，准备重试...")
-                    time.sleep(2)
+                    log("⚠️ 弹窗未自动出现，尝试 JS 强制打开...")
+                    try:
+                        js_ret = page.evaluate("""() => {
+                            const m = document.querySelector('[id^="renewService-"]');
+                            if (!m) return 'no-modal';
+                            m.classList.remove('hidden');
+                            m.removeAttribute('aria-hidden');
+                            m.style.display = 'block';
+                            m.style.opacity = '1';
+                            m.style.pointerEvents = 'auto';
+                            return 'opened';
+                        }""")
+                        time.sleep(1)
+                        create_btn.wait_for(state="visible", timeout=5000)
+                        modal_opened = True
+                        log(f"✅ JS 强制打开弹窗成功！({js_ret})")
+                        break
+                    except:
+                        log("⚠️ JS 强制打开后仍未见 Create Invoice，准备重试...")
+                        time.sleep(2)
             except Exception as e:
                 log(f"❌ 点击尝试出错: {e}")
 
