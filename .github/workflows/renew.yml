@@ -3,7 +3,7 @@ name: Auto Renew HidenCloud
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 05 * * 4' # 周四 UTC 05:30 = 北京时间 13:30，根据到期时间在星期几 提前一天,比如星期三到期，cron写星期二即可
+    - cron: '30 05 * * *' # 每天 UTC 05:30 = 北京时间 13:30 巡检，仅到期前1天内执行续期
 
 permissions:
   actions: write
