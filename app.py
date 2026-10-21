@@ -489,7 +489,9 @@ def login(page):
             log("❌ 登录失败。")
             page.screenshot(path="login_fail.png")
             status = "❌ 登录失败"
-            send_telegram_notification(status)
+            # ⚠️ send_telegram_notification 签名是 (status, old_due, new_due, current_ip)，
+            # 登录阶段还没拿到到期时间，传空字符串即可。
+            send_telegram_notification(status, "N/A", "N/A")
             return False
         log(f"✅ 账号密码登录成功！当前已到达dashboard页面")
         return True
@@ -526,7 +528,7 @@ def get_server_id(page):
 
         log("❌ 所有 URL 均未找到 Server ID")
         status = "❌ 未获取到server ID, 检查服务是否被删除"
-        send_telegram_notification(status)  # 发送 Telegram 通知 
+        send_telegram_notification(status, "N/A", "N/A")
         return None
     except Exception as e:
         log(f"❌ 获取 Server ID 失败: {e}")
