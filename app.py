@@ -615,17 +615,33 @@ def renew_service(page):
                             m.style.display = 'flex';
                             m.style.visibility = 'visible';
                             m.style.zIndex = '2147483647';
+                            if (m.parentElement) {
+                                m.parentElement.classList.remove('hidden');
+                                m.parentElement.style.display = 'flex';
+                                m.parentElement.style.visibility = 'visible';
+                                m.parentElement.style.zIndex = '2147483646';
+                            }
+                        });
+                        // 移除含 "backdrop" / "overlay" / "bg-black" 的遮挡层（保留含 renewService 的 modal）
+                        document.querySelectorAll('body *').forEach(el => {
+                            const cls = el.className || '';
+                            if (typeof cls !== 'string') return;
+                            if (el.querySelector('[id^="renewService-"]')) return;
+                            if (/backdrop|overlay|bg-black|bg-slate-900/.test(cls)) {
+                                el.style.display = 'none';
+                            }
                         });
                         // 2. 找 Create Invoice 按钮所在 form，直接 requestSubmit
                         const form = document.querySelector('[id^="renewService-"] form');
                         if (form) {
+                            form.scrollIntoView({block: 'center'});
                             form.requestSubmit();
                             return true;
                         }
                         // 3. 兜底：直接找按钮点
                         const btn = Array.from(document.querySelectorAll('button, a'))
                             .find(el => el.textContent.trim() === 'Create Invoice');
-                        if (btn) { btn.click(); return true; }
+                        if (btn) { btn.scrollIntoView({block: 'center'}); btn.click(); return true; }
                         return false;
                     }
                     """
@@ -653,7 +669,15 @@ def renew_service(page):
             if new_invoice_url:
                 break
 
-            log("⚠️ 未跳转到发票页面，尝试重新完成 Turnstile 验证后重试...")
+            # 重新走一遍 Renew 按钮开新 modal，避免反复 submit 同一个被 CF 拦死的 modal
+            log("⚠️ 未跳转到发票页面，重新点 Renew 按钮开新 modal...")
+            try:
+                page.keyboard.press("Escape")
+                time.sleep(1)
+                renew_btn.click(timeout=10000)
+                time.sleep(4)
+            except Exception as e:
+                log(f"⚠️ 重新开 modal 失败: {e}")
             solve_modal_turnstile(page, timeout=45)
 
         if not new_invoice_url:
