@@ -462,7 +462,7 @@ def login(page):
         handle_cloudflare(page, timeout=240)
         nav_start = time.time()
         navigated = False
-        while time.time() - nav_start < 180:
+        while time.time() - nav_start < 120:
             try:
                 if "/auth/login" not in page.url and not _is_security_check_page(page):
                     navigated = True
@@ -472,26 +472,18 @@ def login(page):
             except Exception:
                 pass
             time.sleep(1)
-        # 即使 180s 窗口耗尽没检测到跳转，也不要立刻判失败：
-        # CF 盾在登录后常反复拦导致 URL 检测不可靠，但 cookie 可能已下发。
-        # 直接 goto /dashboard + 过 CF 盾，看是否已登录。
         if not navigated:
-            log("⚠️ 未检测到登录跳转，尝试直接访问 dashboard...")
-            page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
-            handle_cloudflare(page, timeout=180)
-            time.sleep(3)
-        else:
-            page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
-            handle_cloudflare(page, timeout=120)
+            log("❌ 登录提交后未能完成跳转。")
+            page.screenshot(path="login_fail.png")
+            return False
+        page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
+        handle_cloudflare(page, timeout=120)
         page_title = page.title()
         log(f"📝 当前Title: {page_title}")
         if not _is_logged_in(page):
             log("❌ 登录失败。")
-            page.screenshot(path="login_fail.png")
             status = "❌ 登录失败"
-            # ⚠️ send_telegram_notification 签名是 (status, old_due, new_due, current_ip)，
-            # 登录阶段还没拿到到期时间，传空字符串即可。
-            send_telegram_notification(status, "N/A", "N/A")
+            send_telegram_notification(status)  # 发送 Telegram 通知 
             return False
         log(f"✅ 账号密码登录成功！当前已到达dashboard页面")
         return True
@@ -528,7 +520,7 @@ def get_server_id(page):
 
         log("❌ 所有 URL 均未找到 Server ID")
         status = "❌ 未获取到server ID, 检查服务是否被删除"
-        send_telegram_notification(status, "N/A", "N/A")
+        send_telegram_notification(status)  # 发送 Telegram 通知 
         return None
     except Exception as e:
         log(f"❌ 获取 Server ID 失败: {e}")
@@ -605,64 +597,19 @@ def renew_service(page):
             page.screenshot(path="turnstile_timeout.png")
 
         # 点击 Create Invoice；未跳转说明验证未通过/已过期，重做验证后再试
-        # ⚠️ 经验证：Flowbite modal 的 JS 绑定常失效，Playwright wait_for(visible) 永远不到 →
-        # 改成"立即走 JS 兜底 + 移除 modal hidden class"，不再白等 30s。
         new_invoice_url = None
         time.sleep(2)
-
-        def _js_force_submit_invoice():
-            """强开 modal（移除 hidden 类 + display:flex）后，用 JS 直接 submit 表单。
-            返回 True 表示 URL 已跳转到 /payment/invoice/。"""
-            try:
-                result = page.evaluate(
-                    """
-                    () => {
-                        // 1. 强开所有 renewService-* 弹窗（Flowbite 初始化失败时 hidden 类未移除）
-                        document.querySelectorAll('[id^="renewService-"]').forEach(m => {
-                            m.classList.remove('hidden');
-                            m.style.display = 'flex';
-                            m.style.visibility = 'visible';
-                            m.style.zIndex = '2147483647';
-                            if (m.parentElement) {
-                                m.parentElement.classList.remove('hidden');
-                                m.parentElement.style.display = 'flex';
-                                m.parentElement.style.visibility = 'visible';
-                                m.parentElement.style.zIndex = '2147483646';
-                            }
-                        });
-                        // 移除含 "backdrop" / "overlay" / "bg-black" 的遮挡层（保留含 renewService 的 modal）
-                        document.querySelectorAll('body *').forEach(el => {
-                            const cls = el.className || '';
-                            if (typeof cls !== 'string') return;
-                            if (el.querySelector('[id^="renewService-"]')) return;
-                            if (/backdrop|overlay|bg-black|bg-slate-900/.test(cls)) {
-                                el.style.display = 'none';
-                            }
-                        });
-                        // 2. 找 Create Invoice 按钮所在 form，直接 requestSubmit
-                        const form = document.querySelector('[id^="renewService-"] form');
-                        if (form) {
-                            form.scrollIntoView({block: 'center'});
-                            form.requestSubmit();
-                            return true;
-                        }
-                        // 3. 兜底：直接找按钮点
-                        const btn = Array.from(document.querySelectorAll('button, a'))
-                            .find(el => el.textContent.trim() === 'Create Invoice');
-                        if (btn) { btn.scrollIntoView({block: 'center'}); btn.click(); return true; }
-                        return false;
-                    }
-                    """
-                )
-                return result
-            except Exception as e:
-                log(f"⚠️ JS 强制 submit 异常: {e}")
-                return False
-
         for attempt in range(6):
             log(f"🖱️ 点击 Create Invoice（第 {attempt + 1} 次）...")
-            # 先 JS 兜底强开 modal + submit form，再检查是否跳转
-            _js_force_submit_invoice()
+            try:
+                create_btn.wait_for(state="visible", timeout=30000)
+                create_btn.click(timeout=20000)
+            except Exception as e:
+                log(f"⚠️ 点击 Create Invoice 失败: {e}")
+                solve_modal_turnstile(page, timeout=45)
+                time.sleep(2)
+                continue
+
             start_wait = time.time()
             while time.time() - start_wait < 30:
                 if "/payment/invoice/" in page.url:
@@ -677,15 +624,7 @@ def renew_service(page):
             if new_invoice_url:
                 break
 
-            # 重新走一遍 Renew 按钮开新 modal，避免反复 submit 同一个被 CF 拦死的 modal
-            log("⚠️ 未跳转到发票页面，重新点 Renew 按钮开新 modal...")
-            try:
-                page.keyboard.press("Escape")
-                time.sleep(1)
-                renew_btn.click(timeout=10000)
-                time.sleep(4)
-            except Exception as e:
-                log(f"⚠️ 重新开 modal 失败: {e}")
+            log("⚠️ 未跳转到发票页面，尝试重新完成 Turnstile 验证后重试...")
             solve_modal_turnstile(page, timeout=45)
 
         if not new_invoice_url:
