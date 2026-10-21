@@ -462,7 +462,7 @@ def login(page):
         handle_cloudflare(page, timeout=240)
         nav_start = time.time()
         navigated = False
-        while time.time() - nav_start < 120:
+        while time.time() - nav_start < 180:
             try:
                 if "/auth/login" not in page.url and not _is_security_check_page(page):
                     navigated = True
@@ -472,18 +472,24 @@ def login(page):
             except Exception:
                 pass
             time.sleep(1)
+        # 即使 180s 窗口耗尽没检测到跳转，也不要立刻判失败：
+        # CF 盾在登录后常反复拦导致 URL 检测不可靠，但 cookie 可能已下发。
+        # 直接 goto /dashboard + 过 CF 盾，看是否已登录。
         if not navigated:
-            log("❌ 登录提交后未能完成跳转。")
-            page.screenshot(path="login_fail.png")
-            return False
-        page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
-        handle_cloudflare(page, timeout=120)
+            log("⚠️ 未检测到登录跳转，尝试直接访问 dashboard...")
+            page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
+            handle_cloudflare(page, timeout=180)
+            time.sleep(3)
+        else:
+            page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
+            handle_cloudflare(page, timeout=120)
         page_title = page.title()
         log(f"📝 当前Title: {page_title}")
         if not _is_logged_in(page):
             log("❌ 登录失败。")
+            page.screenshot(path="login_fail.png")
             status = "❌ 登录失败"
-            send_telegram_notification(status)  # 发送 Telegram 通知 
+            send_telegram_notification(status)
             return False
         log(f"✅ 账号密码登录成功！当前已到达dashboard页面")
         return True
