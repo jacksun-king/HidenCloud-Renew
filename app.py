@@ -597,19 +597,48 @@ def renew_service(page):
             page.screenshot(path="turnstile_timeout.png")
 
         # 点击 Create Invoice；未跳转说明验证未通过/已过期，重做验证后再试
+        # ⚠️ 经验证：Flowbite modal 的 JS 绑定常失效，Playwright wait_for(visible) 永远不到 →
+        # 改成"立即走 JS 兜底 + 移除 modal hidden class"，不再白等 30s。
         new_invoice_url = None
         time.sleep(2)
+
+        def _js_force_submit_invoice():
+            """强开 modal（移除 hidden 类 + display:flex）后，用 JS 直接 submit 表单。
+            返回 True 表示 URL 已跳转到 /payment/invoice/。"""
+            try:
+                result = page.evaluate(
+                    """
+                    () => {
+                        // 1. 强开所有 renewService-* 弹窗（Flowbite 初始化失败时 hidden 类未移除）
+                        document.querySelectorAll('[id^="renewService-"]').forEach(m => {
+                            m.classList.remove('hidden');
+                            m.style.display = 'flex';
+                            m.style.visibility = 'visible';
+                            m.style.zIndex = '2147483647';
+                        });
+                        // 2. 找 Create Invoice 按钮所在 form，直接 requestSubmit
+                        const form = document.querySelector('[id^="renewService-"] form');
+                        if (form) {
+                            form.requestSubmit();
+                            return true;
+                        }
+                        // 3. 兜底：直接找按钮点
+                        const btn = Array.from(document.querySelectorAll('button, a'))
+                            .find(el => el.textContent.trim() === 'Create Invoice');
+                        if (btn) { btn.click(); return true; }
+                        return false;
+                    }
+                    """
+                )
+                return result
+            except Exception as e:
+                log(f"⚠️ JS 强制 submit 异常: {e}")
+                return False
+
         for attempt in range(6):
             log(f"🖱️ 点击 Create Invoice（第 {attempt + 1} 次）...")
-            try:
-                create_btn.wait_for(state="visible", timeout=30000)
-                create_btn.click(timeout=20000)
-            except Exception as e:
-                log(f"⚠️ 点击 Create Invoice 失败: {e}")
-                solve_modal_turnstile(page, timeout=45)
-                time.sleep(2)
-                continue
-
+            # 先 JS 兜底强开 modal + submit form，再检查是否跳转
+            _js_force_submit_invoice()
             start_wait = time.time()
             while time.time() - start_wait < 30:
                 if "/payment/invoice/" in page.url:
