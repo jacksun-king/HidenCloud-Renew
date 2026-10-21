@@ -50,6 +50,26 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python -u app.py
 
+      # ⚠️ 临时诊断：把脚本存的截图上传为 artifact，方便排查失败点（诊断完成后删除此 step）
+      - name: 📸 上传诊断截图
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "现有截图:"
+          ls -la *.png 2>/dev/null || echo "（无截图）"
+          mkdir -p _debug
+          cp -f *.png _debug/ 2>/dev/null || true
+          echo "screenshot-list: $(ls _debug)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📦 归档诊断截图
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hiden-debug-shots
+          path: _debug
+          if-no-files-found: ignore
+
       # 更新时间到time.txt,避免6个月未更新导致工作流暂停
       - name: 🕒 更新时间
         run: |
